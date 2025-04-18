@@ -1,0 +1,428 @@
+```{r echo=FALSE, fig.height=3.5, fig.width=7}
+#loading of the used libraries
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(tidyr)
+library(ggthemes)
+library(igraph)
+library(ggraph)
+library(ggplot2)
+library(ggpubr)
+library(plotly)
+library(reshape2)
+library(lubridate)
+library(survival)
+library(survminer)
+library(gmodels)
+library(ggrepel)
+
+#loading the whole dataset from Antibiotic Resistance Microbiology Dataset (ARMD)
+#data source : # https://datadryad.org/dataset/doi:10.5061/dryad.jq2bvq8kp#
+#loading of dataset and removing unnecessary columns
+demographics <- read.csv("D:/R_graduation_project/demographics.csv")
+microbiology_cultures_cohort <- read.csv("D:/R_graduation_project/microbiology_cultures_cohort.csv")
+microbial_resistance_clean <- read.csv("D:/R_graduation_project/microbial_resistance_clean.csv", row.names=1)
+
+
+#1.culture_cohort
+microbiology_cultures_cohort_clean <- microbiology_cultures_cohort %>%
+  select(culture_description, was_positive, organism, antibiotic, susceptibility, order_time_jittered_utc)
+#renaming column 
+microbiology_cultures_cohort_clean <- microbiology_cultures_cohort %>%
+  rename(culture_date = order_time_jittered_utc) %>% 
+  mutate(
+    culture_date = as.Date(culture_date)  # Drops time/timezone, keeps YYYY-MM-DD
+  )
+Sys.setlocale("LC_TIME", "English") #confirming that date is displayed in English
+
+KP_culture_cohort <- microbiology_cultures_cohort_clean %>%
+  filter(organism == "KLEBSIELLA PNEUMONIAE")
+
+```
+
+```{r, echo=FALSE}
+#Identifying top resistant pathogens in ARMD 
+top_resistant <- cultures_cohort_clean %>%
+  filter(susceptibility == "Resistant") %>%
+  count(organism, sort = TRUE) %>%
+  top_n(10)
+
+# Plot
+ggplot(top_resistant, aes(x = reorder(organism, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Resistant Organisms", x = "", y = "Count") +
+  theme_minimal()
+```
+
+```{r, fig.cap="image2", out.width="70%"}
+knitr::include_graphics("D:/R_graduation_project/image2.jpg")
+```
+
+```{r,echo=FALSE}
+critical_antibiotics <- c(
+  "Meropenem", "Ertapenem",                   # Carbapenems
+  "Ciprofloxacin", "Levofloxacin",            # Fluoroquinolones
+  "Ceftriaxone", "Cefepime",                  # 3rd/4th-gen cephalosporins
+  "Piperacillin/Tazobactam",                  # Beta-lactamase inhibitor
+  "Amikacin", "Gentamicin",                   # Aminoglycosides
+  "Trimethoprim/Sulfamethoxazole" )            # Folate pathway inhibitors
+klebsiella_trends <- KP_culture_cohort %>%
+  filter(susceptibility %in% c("Susceptible","Resistant")) %>% #excluding intermediates
+  filter(antibiotic %in% critical_antibiotics) %>%
+  mutate(
+    year = year(as.Date(culture_date)),
+        ) %>% 
+    group_by(year, antibiotic) %>%
+    summarize(
+        total_tests = n(),
+        resistant_cases = sum(susceptibility == "Resistant"),
+        resistance_rate = resistant_cases / total_tests * 100,
+        .groups = "drop"
+      )
+resistance_rates <- KP_culture_cohort %>%
+    filter(antibiotic %in% critical_antibiotics) %>%
+    group_by(antibiotic, year(as.Date(culture_date))) %>%
+    summarise(
+        total_cases = n(),
+        resistant_cases = sum(susceptibility == "Resistant"),
+        resistance_rate = resistant_cases / total_cases * 100 ,
+        .groups = "drop"
+     )
+
+klebsiella_trends %>%
+  filter(antibiotic %in% critical_antibiotics) %>%
+  ggplot(aes(x = factor(year), y = resistance_rate, fill = antibiotic)) +
+  geom_col(position = position_dodge(preserve = "single"), width = 0.9) +
+  scale_fill_viridis(
+    discrete = TRUE,   
+    option = "B",      
+    direction = -1,    
+    name = "Antibiotic" 
+  ) +
+  labs(
+    title = "Resistance Trends for Critical Antibiotics in K. pneumoniae",
+    x = "Year",
+    y = "Resistance Rate (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    legend.position = "bottom",
+    panel.grid.major.x = element_blank()
+  ) +
+  scale_y_continuous(limits = c(0, max(klebsiella_trends$resistance_rate) * 1.15))  # Added more headroom for labels
+```
+```{r,echo=FALSE}
+######Heatmap depicting resistance rates of critical antibiotics for Klebsiella Pneumoniae
+ggplot(klebsiella_trends, aes(
+  x = reorder(antibiotic, -resistance_rate),  # Sort by resistance rate
+  y = "Resistance Rate",                      # Single row for simplicity
+  fill = resistance_rate                      # Color by resistance rate
+)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  geom_text(aes(label = paste0(round(resistance_rate, 1), "%")), 
+            color = "black", size = 2.7) +
+  scale_fill_gradient(
+    low = "grey", 
+    high = "blue",
+    limits = c(0, 100),
+    name = "Resistance Rate (%)"
+  ) +
+  labs(
+    title = "Resistance Rates in Klebsiella pneumoniae (Critical Antibiotics)",
+    x = "Antibiotic",
+    y = NULL
+  ) +
+  facet_wrap(~year, ncol = 3) +  # Split heatmaps by year
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    plot.title = element_text(face = "bold", size = 14),
+    strip.background = element_rect(fill = "lightgray")  # Facet label styling 
+  )
+```
+
+## Antibiotic resistance according to classes
+
+### 1.Folate pathway inhibitors
+
+```{r, echo=FALSE}
+Folate_pathway_inhibitors = "Trimethoprim/Sulfamethoxazole"
+klebsiella_folate_trends <- KP_culture_cohort %>%
+  filter(susceptibility %in% c("Susceptible","Resistant")) %>% 
+  filter(antibiotic %in% Folate_pathway_inhibitors) %>%
+  mutate(
+    year = year(as.Date(culture_date)),
+  ) %>% 
+  group_by(year, antibiotic) %>%
+  summarize(
+    total_tests = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases / total_tests * 100,
+    .groups = "drop"
+  )
+resistance_rates <- KP_culture_cohort %>%
+  filter(antibiotic %in% Folate_pathway_inhibitors) %>%
+  group_by(antibiotic, year(as.Date(culture_date))) %>%
+  summarise(
+    total_cases = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases / total_cases * 100 ,
+    .groups = "drop"
+  )
+
+klebsiella_folate_trends %>%
+  filter(antibiotic %in% Folate_pathway_inhibitors) %>%
+  ggplot(aes(x = year, y = resistance_rate, color = antibiotic, group = antibiotic)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Folate pathway inhibitors resistance for Klebsiella pneumoniae over years",
+    x = "year",
+    y = "Resistance Rate (%)",
+    color = "Trimethoprim/Sulfamethoxazole"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    legend.position = "bottom" ,
+    plot.title = element_text(face = "bold")
+  ) +
+  scale_x_continuous(breaks = unique(klebsiella_folate_trends$year))
+
+
+```
+
+### 2.Aminoglycosides
+
+```{r,echo=FALSE}
+Aminoglycosides <- c("Amikacin", "Gentamicin")
+
+klebsiella_amino_trends <- KP_culture_cohort %>%
+  filter(susceptibility %in% c("Susceptible","Resistant")) %>% 
+  filter(antibiotic %in% Aminoglycosides) %>%
+  mutate(
+    year = year(as.Date(culture_date)),
+  ) %>% 
+  group_by(year, antibiotic) %>%
+  summarize(
+    total_tests = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases / total_tests * 100,
+    .groups = "drop"
+  )
+resistance_rates <- KP_culture_cohort %>%
+  filter(antibiotic %in% Aminoglycosides) %>%
+  group_by(antibiotic, year(as.Date(culture_date))) %>%
+  summarise(
+    total_cases = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases / total_cases * 100 ,
+    .groups = "drop"
+  )
+
+klebsiella_amino_trends %>%
+  filter(antibiotic %in% Aminoglycosides) %>%
+  ggplot(aes(x = year, y = resistance_rate, color = antibiotic, group = antibiotic)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Aminoglycosides resistance for Klebsiella pneumoniae",
+    x = "year",
+    y = "Resistance Rate (%)",
+    color = "ANTIBIOTIC"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom" ,
+    plot.title = element_text(face = "bold")
+  ) +
+  scale_x_continuous(breaks = unique(klebsiella_amino_trends$year))
+
+```
+
+### 3.Fluoroquinolones:
+
+```{r, echo=FALSE}
+Fluoroquinolones <- c("Ciprofloxacin", "Levofloxacin")
+klebsiella_fluoro_trends <- KP_culture_cohort %>%
+  filter(susceptibility %in% c("Susceptible","Resistant")) %>%
+  filter(antibiotic %in% Fluoroquinolones) %>%
+  mutate(
+    year = year(as.Date(culture_date)),
+  ) %>% 
+  group_by(year, antibiotic) %>%
+  summarize(
+    total_tests = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases / total_tests * 100,
+    .groups = "drop"
+  )
+resistance_rates <- KP_culture_cohort %>%
+  filter(antibiotic %in% Fluoroquinolones) %>%
+  group_by(antibiotic, year(as.Date(culture_date))) %>%
+  summarise(
+    total_cases = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases / total_cases * 100 ,
+    .groups = "drop"
+  )
+
+
+klebsiella_fluoro_trends %>%
+  filter(antibiotic %in% Fluoroquinolones) %>%
+  ggplot(aes(x = year, y = resistance_rate, color = antibiotic, group = antibiotic)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Fluoroquinolones resistance for Klebsiella pneumoniae",
+    x = "year",
+    y = "Resistance Rate (%)",
+    color = "ANTIBIOTIC"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom" ,
+    plot.title = element_text(face = "bold")
+  ) +
+  scale_x_continuous(breaks = unique(klebsiella_fluoro_trends$year))
+```
+
+```{r echo=FALSE}
+# Summarize resistance by culture type
+KP_culture_cohort_description<- KP_culture_cohort %>%
+  filter(susceptibility %in% c("Resistant", "Susceptible")) %>%
+  group_by(culture_description, antibiotic) %>%
+  summarize(
+    resistance_rate = mean(susceptibility == "Resistant") * 100 ,
+    .groups = "drop"
+  )
+# Plot
+KP_culture_cohort_description %>%
+  filter(antibiotic %in% critical_antibiotics) %>%
+  ggplot(aes(x = culture_description, y = resistance_rate, fill = antibiotic)) +
+  geom_col(position = "dodge") +
+  labs(title = "Resistance Rates by Culture Type", x = "Culture Type", y = "Resistance Rate (%)") +
+  theme_minimal() +
+  coord_flip()
+
+```
+#The Time it takes since Culture Order to Resistance Confirmation
+
+```{r,echo=FALSE}
+
+KP_microbial_resistance <- microbial_resistance_clean %>%
+  filter(organism == "KLEBSIELLA PNEUMONIAE") 
+# Boxplot by organism
+KP_microbial_resistance %>%
+  ggplot(aes(x = organism, y = resistant_time_to_culturetime)) +
+  geom_boxplot() +
+  labs(title = "Time from Culture Order to Resistance Confirmation", x = "Organism", y = "Days") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+#Calculating the average of resistance Confirmation Time 
+KP_microbial_resistance_y <- KP_microbial_resistance %>%
+  summarise( averageK = mean(resistant_time_to_culturetime))
+## Average = 801.2051
+```
+# The correllation between K.Pneumoiae and Nasocomial Infection
+
+```{r,echo=FALSE}
+
+# Load datasets
+KP_micro_culture_cohort <- microbiology_cultures_cohort %>%
+  filter(organism == "KLEBSIELLA PNEUMONIAE")
+
+demographics_clean <- demographics %>%
+  arrange(pat_enc_csn_id_coded) %>%
+  distinct(pat_enc_csn_id_coded, .keep_all = TRUE)
+
+#merging the two datasets using a key column : pat_enc_csn_id_coded
+
+merged_data <- left_join( KP_micro_culture_cohort, demographics_clean, by = "pat_enc_csn_id_coded")
+
+merged_data <- merged_data %>%
+  select(pat_enc_csn_id_coded,order_time_jittered_utc, culture_description, ordering_mode, antibiotic, age, culture_description, susceptibility, gender) %>%
+  rename(KP_culture_date = order_time_jittered_utc ) %>%
+  mutate(KP_culure_date = as.Date(KP_culture_date))
+
+ordering_mode_plot <- merged_data %>% 
+  filter(ordering_mode %in% c("Inpatient", "Outpatient"))
+#Basic Percentage Bar Chart 
+# Calculate percentages
+mode_percentage <- ordering_mode_plot %>%
+  count(ordering_mode) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+#Interactive Pie Chart (Plotly)
+
+plot_ly(mode_percentage, 
+        labels = ~ordering_mode, 
+        values = ~percentage,
+        type = "pie",
+        textinfo = "label+percent",
+        insidetextorientation = "radial",
+        marker = list(colors = c("#1f77b4", "#ff7f0e"))) %>%
+  layout(title = "Proportion of Inpatient vs Outpatient Cultures")
+
+##Combined Inpatient/Outpatient Resistance by Antibiotic
+### Resistance by ordering mode and antibiotic
+mode_abx_resistance <- ordering_mode_plot %>%
+  group_by(ordering_mode, antibiotic) %>%
+  summarize(
+    resistance_rate = mean(susceptibility == "Resistant") * 100,
+    .groups = "drop"
+  )
+```
+
+# Visualizing the relationship between age and Klebsiella pneumoniae infection
+
+```{r, echo=FALSE}
+#Visualizing the relationship between age and Klebsiella pneumoniae infection
+## Basic age distribution
+ggplot(merged_data, aes(x = age)) +
+  geom_bar(fill = "#1f77b4", alpha = 0.8) +
+  labs(title = "Distribution of K. pneumoniae Infections by Age Group",
+       x = "Age Group", 
+       y = "Number of Cases") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Calculate resistance rates by age
+age_resistance <- merged_data %>%
+  group_by(age) %>%
+  summarize(
+    total_cases = n(),
+    resistant_cases = sum(susceptibility == "Resistant"),
+    resistance_rate = resistant_cases/total_cases * 100
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
